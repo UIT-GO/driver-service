@@ -17,6 +17,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -45,10 +47,9 @@ class DriverServiceImplTest {
         when(driverRepository.findByDriverId(driverId)).thenReturn(driver);
         when(driverRepository.save(any(Driver.class))).thenReturn(driver);
 
-        Driver updatedDriver = driverService.updateDriverLocation(request, driverId);
-        assertEquals("10.0", updatedDriver.getLatitude());
-        assertEquals("20.0", updatedDriver.getLongitude());
-        assertEquals("Test Location", updatedDriver.getDetailLocation());
+        String result = driverService.updateDriverLocation(request, driverId);
+
+        assertEquals("Successfully updated location for driver 123", result);
     }
 
     @Test

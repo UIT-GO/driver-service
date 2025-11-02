@@ -16,7 +16,7 @@ public class DriverController {
     private DriverService driverService;
 
     @PutMapping("/{id}/location")
-    ResponseEntity<Driver> updateDriverLocation(@RequestBody DriverLocationRequest driverLocationRequest, @PathVariable String id) throws Exception {
+    ResponseEntity<String> updateDriverLocation(@RequestBody DriverLocationRequest driverLocationRequest, @PathVariable String id) throws Exception {
         return ResponseEntity.ok(driverService.updateDriverLocation(driverLocationRequest, id));
     }
 
