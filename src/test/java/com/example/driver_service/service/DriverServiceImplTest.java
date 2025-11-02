@@ -1,28 +1,35 @@
 package com.example.driver_service.service;
 
 import com.example.driver_service.DTO.UserDTO;
+import com.example.driver_service.ENUM.Status;
 import com.example.driver_service.client.UserClient;
 import com.example.driver_service.model.Driver;
 import com.example.driver_service.repository.DriverRepository;
 import com.example.driver_service.request.DriverLocationRequest;
-import com.example.driver_service.ENUM.Status;
-import com.example.driver_service.event.AcceptTripEvent;
+import com.example.driver_service.response.DriverLocationResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.kafka.core.KafkaTemplate;
-
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.geo.*;
+import org.springframework.data.redis.connection.RedisGeoCommands;
+import org.springframework.data.redis.core.BoundGeoOperations;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.kafka.core.KafkaTemplate;
+
+import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class DriverServiceImplTest {
+
     @Mock
     private DriverRepository driverRepository;
 
@@ -32,121 +39,340 @@ class DriverServiceImplTest {
     @Mock
     private KafkaTemplate<String, String> kafkaTemplate;
 
-    @InjectMocks
+    @Mock
+    private RedisTemplate<String, String> redisTemplate;
+
+    @Mock
+    private BoundGeoOperations<String, String> geoOperations;
+
     private DriverServiceImpl driverService;
 
-    @Test
-    void testUpdateDriverLocation_DriverFound() throws Exception {
-        String driverId = "123";
-        DriverLocationRequest request = new DriverLocationRequest();
-        request.setLatitude("10.0");
-        request.setLongitude("20.0");
-        request.setDetailLocation("Test Location");
-        Driver driver = new Driver();
-        driver.setDriverId(driverId);
-        when(driverRepository.findByDriverId(driverId)).thenReturn(driver);
-        when(driverRepository.save(any(Driver.class))).thenReturn(driver);
+    private Driver testDriver;
+    private UserDTO testUserDTO;
+    private DriverLocationRequest testLocationRequest;
 
-        String result = driverService.updateDriverLocation(request, driverId);
+    @BeforeEach
+    void setUp() {
+        when(redisTemplate.boundGeoOps(anyString())).thenReturn(geoOperations);
+        
+        driverService = new DriverServiceImpl(
+            driverRepository,
+            userClient,
+            kafkaTemplate,
+            redisTemplate
+        );
 
-        assertEquals("Successfully updated location for driver 123", result);
+        // Setup test data
+        testDriver = new Driver();
+        testDriver.setId("1");
+        testDriver.setDriverId("driver123");
+        testDriver.setLatitude("10.762622");
+        testDriver.setLongitude("106.660172");
+        testDriver.setDetailLocation("Ho Chi Minh City");
+        testDriver.setStatus(Status.OFF);
+
+        testUserDTO = new UserDTO();
+        testUserDTO.setUserId("user123");
+        testUserDTO.setName("John Doe");
+        testUserDTO.setEmail("john.doe@example.com");
+
+        testLocationRequest = new DriverLocationRequest();
+        testLocationRequest.setLatitude("10.762622");
+        testLocationRequest.setLongitude("106.660172");
+        testLocationRequest.setDetailLocation("Ho Chi Minh City");
     }
 
     @Test
-    void testUpdateDriverLocation_DriverNotFound() {
-        String driverId = "123";
-        DriverLocationRequest request = new DriverLocationRequest();
-        when(driverRepository.findByDriverId(driverId)).thenReturn(null);
-        Exception exception = assertThrows(Exception.class, () -> driverService.updateDriverLocation(request, driverId));
+    void getDriverLocation_WhenDriverExists_ShouldReturnDriverLocationResponse() throws Exception {
+        // Arrange
+        when(driverRepository.findByDriverId("driver123")).thenReturn(testDriver);
+        when(userClient.getUserInfo()).thenReturn(testUserDTO);
+
+        // Act
+        DriverLocationResponse result = driverService.getDriverLocation("driver123");
+
+        // Assert
+        assertNotNull(result);
+        assertEquals("driver123", result.getDriverId());
+        assertEquals("10.762622", result.getLatitude());
+        assertEquals("106.660172", result.getLongitude());
+        assertEquals("Ho Chi Minh City", result.getDetailLocation());
+        assertEquals("John Doe", result.getDriverName());
+
+        verify(driverRepository).findByDriverId("driver123");
+        verify(userClient).getUserInfo();
+    }
+
+    @Test
+    void getDriverLocation_WhenDriverNotFound_ShouldThrowException() {
+        // Arrange
+        when(driverRepository.findByDriverId("nonexistent")).thenReturn(null);
+
+        // Act & Assert
+        Exception exception = assertThrows(Exception.class, () -> {
+            driverService.getDriverLocation("nonexistent");
+        });
+
         assertEquals("Driver not found", exception.getMessage());
+        verify(driverRepository).findByDriverId("nonexistent");
+        verify(userClient, never()).getUserInfo();
     }
 
     @Test
-    void testTurnOnDriver_DriverFound() throws Exception {
-        String driverId = "123";
-        Driver driver = new Driver();
-        driver.setDriverId(driverId);
-        when(driverRepository.findByDriverId(driverId)).thenReturn(driver);
-        when(driverRepository.save(any(Driver.class))).thenReturn(driver);
+    void updateDriverLocation_WhenDriverIdIsValid_ShouldUpdateLocationSuccessfully() throws Exception {
+        // Arrange
+        String driverId = "driver123";
+        ArgumentCaptor<Point> pointCaptor = ArgumentCaptor.forClass(Point.class);
 
-        String result = driverService.turnOnDriver(driverId);
-        assertEquals(Status.ON, driver.getStatus());
+        // Act
+        String result = driverService.updateDriverLocation(testLocationRequest, driverId);
+
+        // Assert
+        assertEquals("Successfully updated location for driver driver123", result);
+        
+        verify(geoOperations).add(pointCaptor.capture(), eq(driverId));
+        Point capturedPoint = pointCaptor.getValue();
+        assertEquals(106.660172, capturedPoint.getX(), 0.000001);
+        assertEquals(10.762622, capturedPoint.getY(), 0.000001);
+    }
+
+    @Test
+    void updateDriverLocation_WhenDriverIdIsNull_ShouldThrowException() {
+        // Act & Assert
+        Exception exception = assertThrows(Exception.class, () -> {
+            driverService.updateDriverLocation(testLocationRequest, null);
+        });
+
+        assertEquals("Driver not found", exception.getMessage());
+        verify(geoOperations, never()).add(any(), any());
+    }
+
+    @Test
+    void turnOnDriver_WhenDriverExists_ShouldUpdateStatusToOn() throws Exception {
+        // Arrange
+        when(driverRepository.findByDriverId("driver123")).thenReturn(testDriver);
+        when(driverRepository.save(any(Driver.class))).thenReturn(testDriver);
+
+        // Act
+        String result = driverService.turnOnDriver("driver123");
+
+        // Assert
         assertEquals("Driver is now available", result);
+        assertEquals(Status.ON, testDriver.getStatus());
+        
+        verify(driverRepository).findByDriverId("driver123");
+        verify(driverRepository).save(testDriver);
     }
 
     @Test
-    void testTurnOnDriver_DriverNotFound() {
-        String driverId = "123";
-        when(driverRepository.findByDriverId(driverId)).thenReturn(null);
-        Exception exception = assertThrows(Exception.class, () -> driverService.turnOnDriver(driverId));
+    void turnOnDriver_WhenDriverNotFound_ShouldThrowException() {
+        // Arrange
+        when(driverRepository.findByDriverId("nonexistent")).thenReturn(null);
+
+        // Act & Assert
+        Exception exception = assertThrows(Exception.class, () -> {
+            driverService.turnOnDriver("nonexistent");
+        });
+
         assertEquals("Driver not found", exception.getMessage());
+        verify(driverRepository).findByDriverId("nonexistent");
+        verify(driverRepository, never()).save(any());
     }
 
     @Test
-    void testTurnOffDriver_DriverFound() throws Exception {
-        String driverId = "123";
-        Driver driver = new Driver();
-        driver.setDriverId(driverId);
-        when(driverRepository.findByDriverId(driverId)).thenReturn(driver);
-        when(driverRepository.save(any(Driver.class))).thenReturn(driver);
+    void turnOffDriver_WhenDriverExists_ShouldUpdateStatusToOff() throws Exception {
+        // Arrange
+        testDriver.setStatus(Status.ON); // Start with ON status
+        when(driverRepository.findByDriverId("driver123")).thenReturn(testDriver);
+        when(driverRepository.save(any(Driver.class))).thenReturn(testDriver);
 
-        String result = driverService.turnOffDriver(driverId);
-        assertEquals(Status.OFF, driver.getStatus());
+        // Act
+        String result = driverService.turnOffDriver("driver123");
+
+        // Assert
         assertEquals("Driver is now available", result);
+        assertEquals(Status.OFF, testDriver.getStatus());
+        
+        verify(driverRepository).findByDriverId("driver123");
+        verify(driverRepository).save(testDriver);
     }
 
     @Test
-    void testTurnOffDriver_DriverNotFound() {
-        String driverId = "123";
-        when(driverRepository.findByDriverId(driverId)).thenReturn(null);
-        Exception exception = assertThrows(Exception.class, () -> driverService.turnOffDriver(driverId));
+    void turnOffDriver_WhenDriverNotFound_ShouldThrowException() {
+        // Arrange
+        when(driverRepository.findByDriverId("nonexistent")).thenReturn(null);
+
+        // Act & Assert
+        Exception exception = assertThrows(Exception.class, () -> {
+            driverService.turnOffDriver("nonexistent");
+        });
+
         assertEquals("Driver not found", exception.getMessage());
+        verify(driverRepository).findByDriverId("nonexistent");
+        verify(driverRepository, never()).save(any());
     }
 
     @Test
-    void testAcceptTrip_Success() throws Exception {
+    void acceptTrip_ShouldPublishEventAndReturnSuccessMessage() throws Exception {
+        // Arrange
         String driverId = "driver123";
         String tripId = "trip456";
-        AcceptTripEvent event = new AcceptTripEvent();
-        event.setDriverId(driverId);
-        event.setTripId(tripId);
-        ObjectMapper objectMapper = new ObjectMapper();
-        String expectedJson = objectMapper.writeValueAsString(event);
-        // Mock kafkaTemplate.send to return null (or a dummy value)
-        doReturn(null).when(kafkaTemplate).send(eq("trip_created"), eq(expectedJson));
+        ArgumentCaptor<String> topicCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> messageCaptor = ArgumentCaptor.forClass(String.class);
 
+        // Act
         String result = driverService.acceptTrip(driverId, tripId);
+
+        // Assert
         assertEquals("Driver driver123 accepted trip trip456", result);
-        verify(kafkaTemplate, times(1)).send(eq("trip_created"), eq(expectedJson));
+        
+        verify(kafkaTemplate).send(topicCaptor.capture(), messageCaptor.capture());
+        
+        String capturedTopic = topicCaptor.getValue();
+        String capturedMessage = messageCaptor.getValue();
+        
+        assertEquals("trip_created", capturedTopic);
+        assertTrue(capturedMessage.contains("\"driverId\":\"driver123\""));
+        assertTrue(capturedMessage.contains("\"tripId\":\"trip456\""));
     }
 
     @Test
-    void testGetDriverLocation_Success() throws Exception {
-        String driverId = "driver123";
-        Driver driver = new Driver();
-        driver.setDriverId(driverId);
-        driver.setLatitude("10.0");
-        driver.setLongitude("20.0");
-        driver.setDetailLocation("Test Location");
-        when(driverRepository.findByDriverId(driverId)).thenReturn(driver);
+    void findDriversNearby_ShouldReturnGeoResults() {
+        // Arrange
+        double latitude = 10.762622;
+        double longitude = 106.660172;
+        double radius = 5.0;
 
-        UserDTO userDTO = new UserDTO();
-        userDTO.setName("John Doe");
-        when(userClient.getUserInfo()).thenReturn(userDTO);
+        RedisGeoCommands.GeoLocation<String> geoLocation1 = 
+            new RedisGeoCommands.GeoLocation<>("driver1", new Point(106.660172, 10.762622));
+        RedisGeoCommands.GeoLocation<String> geoLocation2 = 
+            new RedisGeoCommands.GeoLocation<>("driver2", new Point(106.661172, 10.763622));
 
-        var response = driverService.getDriverLocation(driverId);
-        assertEquals(driverId, response.getDriverId());
-        assertEquals("10.0", response.getLatitude());
-        assertEquals("20.0", response.getLongitude());
-        assertEquals("Test Location", response.getDetailLocation());
-        assertEquals("John Doe", response.getDriverName());
+        GeoResult<RedisGeoCommands.GeoLocation<String>> geoResult1 = 
+            new GeoResult<>(geoLocation1, new Distance(1.0, Metrics.KILOMETERS));
+        GeoResult<RedisGeoCommands.GeoLocation<String>> geoResult2 = 
+            new GeoResult<>(geoLocation2, new Distance(2.0, Metrics.KILOMETERS));
+
+        List<GeoResult<RedisGeoCommands.GeoLocation<String>>> geoResultList = 
+            Arrays.asList(geoResult1, geoResult2);
+
+        GeoResults<RedisGeoCommands.GeoLocation<String>> mockGeoResults = 
+            new GeoResults<>(geoResultList);
+
+        when(geoOperations.radius(any(Circle.class))).thenReturn(mockGeoResults);
+
+        // Act
+        GeoResults<String> result = driverService.findDriversNearby(latitude, longitude, radius);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(2, result.getContent().size());
+        
+        List<GeoResult<String>> content = result.getContent();
+        assertEquals("driver1", content.get(0).getContent());
+        assertEquals("driver2", content.get(1).getContent());
+        assertEquals(1.0, content.get(0).getDistance().getValue());
+        assertEquals(2.0, content.get(1).getDistance().getValue());
+
+        ArgumentCaptor<Circle> circleCaptor = ArgumentCaptor.forClass(Circle.class);
+        verify(geoOperations).radius(circleCaptor.capture());
+        
+        Circle capturedCircle = circleCaptor.getValue();
+        assertEquals(longitude, capturedCircle.getCenter().getX(), 0.000001);
+        assertEquals(latitude, capturedCircle.getCenter().getY(), 0.000001);
+        assertEquals(radius, capturedCircle.getRadius().getValue(), 0.000001);
+        assertEquals(Metrics.KILOMETERS, capturedCircle.getRadius().getMetric());
     }
 
     @Test
-    void testGetDriverLocation_DriverNotFound() {
+    void findDriversNearby_WhenNoDriversFound_ShouldReturnEmptyResults() {
+        // Arrange
+        double latitude = 10.762622;
+        double longitude = 106.660172;
+        double radius = 5.0;
+
+        GeoResults<RedisGeoCommands.GeoLocation<String>> emptyGeoResults = 
+            new GeoResults<>(Arrays.asList());
+
+        when(geoOperations.radius(any(Circle.class))).thenReturn(emptyGeoResults);
+
+        // Act
+        GeoResults<String> result = driverService.findDriversNearby(latitude, longitude, radius);
+
+        // Assert
+        assertNotNull(result);
+        assertTrue(result.getContent().isEmpty());
+        
+        verify(geoOperations).radius(any(Circle.class));
+    }
+
+    @Test
+    void updateDriverLocation_WithInvalidCoordinates_ShouldThrowNumberFormatException() {
+        // Arrange
+        DriverLocationRequest invalidRequest = new DriverLocationRequest();
+        invalidRequest.setLatitude("invalid_latitude");
+        invalidRequest.setLongitude("106.660172");
+        invalidRequest.setDetailLocation("Ho Chi Minh City");
+
+        // Act & Assert
+        assertThrows(NumberFormatException.class, () -> {
+            driverService.updateDriverLocation(invalidRequest, "driver123");
+        });
+
+        verify(geoOperations, never()).add(any(), any());
+    }
+
+    @Test
+    void acceptTrip_WhenKafkaFails_ShouldStillReturnSuccessMessage() throws Exception {
+        // Arrange
         String driverId = "driver123";
-        when(driverRepository.findByDriverId(driverId)).thenReturn(null);
-        Exception exception = assertThrows(Exception.class, () -> driverService.getDriverLocation(driverId));
-        assertEquals("Driver not found", exception.getMessage());
+        String tripId = "trip456";
+        
+        doThrow(new RuntimeException("Kafka error")).when(kafkaTemplate).send(anyString(), anyString());
+
+        // Act & Assert
+        // The method doesn't handle Kafka exceptions, so it will propagate
+        assertThrows(RuntimeException.class, () -> {
+            driverService.acceptTrip(driverId, tripId);
+        });
+        
+        verify(kafkaTemplate).send(eq("trip_created"), anyString());
+    }
+
+    @Test
+    void getDriverLocation_WhenUserClientFails_ShouldPropagateException() throws Exception {
+        // Arrange
+        when(driverRepository.findByDriverId("driver123")).thenReturn(testDriver);
+        when(userClient.getUserInfo()).thenThrow(new RuntimeException("User service unavailable"));
+
+        // Act & Assert
+        assertThrows(RuntimeException.class, () -> {
+            driverService.getDriverLocation("driver123");
+        });
+
+        verify(driverRepository).findByDriverId("driver123");
+        verify(userClient).getUserInfo();
+    }
+
+    @Test
+    void constructor_ShouldInitializeGeoOperations() {
+        // Arrange
+        @SuppressWarnings("unchecked")
+        RedisTemplate<String, String> newRedisTemplate = mock(RedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        BoundGeoOperations<String, String> newGeoOps = mock(BoundGeoOperations.class);
+        when(newRedisTemplate.boundGeoOps(anyString())).thenReturn(newGeoOps);
+        
+        // Act
+        DriverServiceImpl service = new DriverServiceImpl(
+            driverRepository,
+            userClient,
+            kafkaTemplate,
+            newRedisTemplate
+        );
+
+        // Assert
+        verify(newRedisTemplate).boundGeoOps("active_drivers");
+        assertNotNull(service);
     }
 }

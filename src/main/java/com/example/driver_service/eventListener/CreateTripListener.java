@@ -41,13 +41,22 @@ public class CreateTripListener {
                 return;
             }
 
-            String bestDriverId = driverList.get(0).getContent();
-            AcceptTripEvent createdTripEvent = new AcceptTripEvent();
-            createdTripEvent.setTripId(event.getTripId());
-            createdTripEvent.setDriverId(bestDriverId);
+//            String bestDriverId = driverList.get(0).getContent();
+//            AcceptTripEvent createdTripEvent = new AcceptTripEvent();
+//            createdTripEvent.setTripId(event.getTripId());
+//            createdTripEvent.setDriverId(bestDriverId);
+//
+//            String event2Json = objectMapper.writeValueAsString(createdTripEvent);
+//            kafkaTemplate.send(TOPIC_DRIVER_ASSIGNED, event2Json);
 
-            String event2Json = objectMapper.writeValueAsString(createdTripEvent);
-            kafkaTemplate.send(TOPIC_DRIVER_ASSIGNED, event2Json);
+            for(GeoResult<String> driver : driverList) {
+                String driverId = driver.getContent();
+                AcceptTripEvent createdTripEvent = new AcceptTripEvent();
+                createdTripEvent.setTripId(event.getTripId());
+                createdTripEvent.setDriverId(driverId);
+
+                System.out.println("Notifying driver: " + driverId + " for trip: " + event.getTripId());
+            }
             System.out.println("Received trip event: " + event);
             // add websocket notification logic here if needed
         } catch (Exception e) {
