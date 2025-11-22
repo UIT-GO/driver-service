@@ -1,10 +1,10 @@
-name: CI-CD
+name: build
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-test-docker-push:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
