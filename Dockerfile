@@ -11,7 +11,7 @@ RUN chmod +x mvnw && ./mvnw dependency:go-offline
 
 COPY src/ src/
 
-RUN ./mvnw clean package -DskipTests
+RUN ./mvnw clean package
 
 # Package stage
 FROM eclipse-temurin:17-jre-jammy
