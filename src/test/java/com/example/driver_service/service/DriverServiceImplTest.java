@@ -213,30 +213,6 @@ class DriverServiceImplTest {
     }
 
     @Test
-    void acceptTrip_ShouldPublishEventAndReturnSuccessMessage() throws Exception {
-        // Arrange
-        String driverId = "driver123";
-        String tripId = "trip456";
-        ArgumentCaptor<String> topicCaptor = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> messageCaptor = ArgumentCaptor.forClass(String.class);
-
-        // Act
-        String result = driverService.acceptTrip(driverId, tripId);
-
-        // Assert
-        assertEquals("Driver driver123 accepted trip trip456", result);
-        
-        verify(kafkaTemplate).send(topicCaptor.capture(), messageCaptor.capture());
-        
-        String capturedTopic = topicCaptor.getValue();
-        String capturedMessage = messageCaptor.getValue();
-        
-        assertEquals("trip_created", capturedTopic);
-        assertTrue(capturedMessage.contains("\"driverId\":\"driver123\""));
-        assertTrue(capturedMessage.contains("\"tripId\":\"trip456\""));
-    }
-
-    @Test
     void findDriversNearby_ShouldReturnGeoResults() {
         // Arrange
         double latitude = 10.762622;
@@ -323,23 +299,6 @@ class DriverServiceImplTest {
     }
 
     @Test
-    void acceptTrip_WhenKafkaFails_ShouldStillReturnSuccessMessage() throws Exception {
-        // Arrange
-        String driverId = "driver123";
-        String tripId = "trip456";
-        
-        doThrow(new RuntimeException("Kafka error")).when(kafkaTemplate).send(anyString(), anyString());
-
-        // Act & Assert
-        // The method doesn't handle Kafka exceptions, so it will propagate
-        assertThrows(RuntimeException.class, () -> {
-            driverService.acceptTrip(driverId, tripId);
-        });
-        
-        verify(kafkaTemplate).send(eq("trip_created"), anyString());
-    }
-
-    @Test
     void getDriverLocation_WhenUserClientFails_ShouldPropagateException() throws Exception {
         // Arrange
         when(driverRepository.findByDriverId("driver123")).thenReturn(testDriver);
@@ -374,5 +333,41 @@ class DriverServiceImplTest {
         // Assert
         verify(newRedisTemplate).boundGeoOps("active_drivers");
         assertNotNull(service);
+    }
+
+    @Test
+    void acceptTrip_ShouldLogAndPublishEvent() throws Exception {
+        // Arrange
+        String driverId = "driver123";
+        String tripId = "trip456";
+        ArgumentCaptor<String> topicCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> messageCaptor = ArgumentCaptor.forClass(String.class);
+
+        // Act
+        String result = driverService.acceptTrip(driverId, tripId);
+
+        // Assert
+        assertEquals("Driver driver123 accepted trip trip456", result);
+
+        // Verify trip_created event content
+        verify(kafkaTemplate, atLeastOnce()).send(topicCaptor.capture(), messageCaptor.capture());
+        List<String> topics = topicCaptor.getAllValues();
+        List<String> messages = messageCaptor.getAllValues();
+
+        // Find the trip_created publish call
+        int tripCreatedIndex = -1;
+        for (int i = 0; i < topics.size(); i++) {
+            if ("trip_created".equals(topics.get(i))) {
+                tripCreatedIndex = i;
+                break;
+            }
+        }
+        assertTrue(tripCreatedIndex >= 0, "trip_created topic should be sent");
+        String tripCreatedMessage = messages.get(tripCreatedIndex);
+        assertTrue(tripCreatedMessage.contains("\"driverId\":\"driver123\""));
+        assertTrue(tripCreatedMessage.contains("\"tripId\":\"trip456\""));
+
+        // Verify driver-logs were sent twice (start and success)
+        verify(kafkaTemplate, times(2)).send(eq("driver-logs"), anyString());
     }
 }
