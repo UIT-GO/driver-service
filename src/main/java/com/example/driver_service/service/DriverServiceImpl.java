@@ -80,7 +80,7 @@ public class DriverServiceImpl implements DriverService{
             double longitude = Double.parseDouble(driverLocationRequest.getLongitude());
             double latitude = Double.parseDouble(driverLocationRequest.getLatitude());
             geoOperations.add(new Point(longitude, latitude), id);
-            logToKafka("Successfully updated location for driver " + id);
+            logToKafka("Successfully updated location for driver after ci/cd" + id);
             return "Successfully updated location for driver " + id;
         } else {
             logToKafka("Driver not found for update location, driverId: " + id);
